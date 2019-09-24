@@ -18,7 +18,7 @@ and data mining techniques for practical problems.
 obtained from machine learning and data mining.
 
 ## Open Dataset
-This is a dataset from Kaggle, [**Credit Card Fraud Detection**]https://www.kaggle.com/mlg-ulb/creditcardfraud.
+This is a dataset from Kaggle, [**Credit Card Fraud Detection **]https://www.kaggle.com/mlg-ulb/creditcardfraud.
 
 ## Code Style and Demostration
 This data visualisation programming language is R and development platform is R Studio. It is a R Markdown file.
