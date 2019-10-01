@@ -1,0 +1,1256 @@
+---
+title: "CETM26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#loan library
+library(data.table)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(Metrics)
+library(tictoc)
+#https://cran.r-project.org/web/packages/precrec/vignettes/introduction.html
+library(precrec)
+
+#Global Variable
+credit_raw <- fread("creditcard.csv")
+credit_df<- credit_raw[, -c("Time")]
+credit_raw$Class<- as.character(credit_raw$Class)
+credit_raw$Class <- ifelse(credit_raw$Class=="0", "No Fraud", "Fraud")
+
+#check NA
+anyNA(credit_raw)
+
+#store the time spent on model building
+#by using tic toc functions
+time.records <- rep(NA, 13)
+accuracy.records <- rep(NA, 12)
+balanced.accuracy.records <- rep(NA, 12)
+kappa.records <- rep(NA, 12)
+#Named by Method + Package
+#SVM: Support Vector Machine
+#NN: Neural Network
+#KNN: K-Nearest Neighbors
+#RF: Random Forest
+#GBM: Gradient Boosting Machine
+#XGB: eXtreme Gradient Boosting
+#DNN: Stacked AutoEncoder Deep Neural Network
+names(time.records)<-c("Logistic Regression", "SVM Radial e1071", 
+                       "SVM Sigmoid e1071", "NN caret nnet", "SVM Radial caret kernlab", 
+                       "KNN caret", "RF caret randomForest","GBM caret gbm", "GBM caret gbm 2", "GBM caret gbm 3", "NN neuralnet nnet", 
+                       "XGB caret xgboost", "DNN caret")
+names(accuracy.records)<-c("SVM Radial e1071", "SVM Sigmoid e1071", "NN caret nnet", 
+                          "SVM Radial caret kernlab", "KNN caret", "RF caret randomForest",
+                          "GBM caret gbm", "GBM caret gbm 2", "GBM caret gbm 3", "NN neuralnet nnet", "XGB caret xgboost", "DNN caret")
+accuracy.records.final <- accuracy.records
+balanced.accuracy.records<- accuracy.records
+balanced.accuracy.records.final<- accuracy.records
+kappa.records<- accuracy.records
+kappa.records.final<- accuracy.records
+
+#data cleansing (no need time)
+credit_no_fraud_raw <- credit_raw[Class %chin% "No Fraud", -c("Time")] #284315 rows
+credit_fraud_raw <- credit_raw[Class %chin% "Fraud", -c("Time")] #492 rows
+```
+
+## Credit Card Fraud Detection
+Summary: This dataset has been analyzed by PCA (Principal Components Analysis), attributes splited into V1-V28.
+There are no such NA values in those V1-V28. 
+#for learning curve in caret
+#http://matthewalanham.com/Students/2018_MWDSI_R%20caret%20paper.pdf
+```{r summary}
+summary(credit_df)
+summary(credit_fraud_raw$Amount)
+summary(credit_no_fraud_raw$Amount)
+
+#correlation plot
+library(ggcorrplot)
+library(corrplot)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+#var_credit stores variance
+var_credit <- var(credit_df)
+#cov_credit stores covariance
+cov_credit <- cov(credit_df)
+
+#cor_credit stores correlation
+cor_credit <-cor(credit_df)
+#corplot
+corrplot(cor_credit, type="upper", order="hclust",
+         col=brewer.pal(n=8, name="RdYlBu"))
+
+#remove variables
+remove(cor_credit)
+```
+
+```{r dataset Q1}
+credit_fraud <- credit_fraud_raw
+credit_no_fraud <- credit_no_fraud_raw
+credit_fraud$model <- ifelse(runif(nrow(credit_fraud))<0.8, 1, 0)
+credit_no_fraud$model <- ifelse(runif(nrow(credit_no_fraud))<0.8, 1, 0)
+credit_df<-rbind(credit_fraud, credit_no_fraud)
+credit_final_test<-credit_df[model %chin% 0, -c("model")]
+credit_final_test$Class <- as.factor(credit_final_test$Class)
+credit_final_test2<-credit_raw[, -c("Time")]
+credit_final_test2$Class <- as.factor(credit_final_test2$Class)
+credit_dummy<- credit_df[model %chin% 1]
+credit_dummy$Class<- as.character(credit_dummy$Class)
+credit_fraud <- credit_dummy[Class %chin% "Fraud", -c("model")]
+credit_no_fraud <- credit_dummy[Class %chin% "No Fraud", -c("model")][1:2000]#only select 2000 rows of no fraud
+credit_no_fraud <- credit_dummy[Class %chin% "No Fraud", -c("model")][1:5000]#only select 5000 rows of no fraud
+
+#remove raw datasets to save memory
+#remove(credit_df)
+remove(credit_dummy)
+remove(credit_raw)
+remove(credit_no_fraud_raw)
+remove(credit_fraud_raw)
+
+#only useful datasets: credit_fraud, credit_no_fraud, credit_final_test, credit_final_test2
+```
+
+```{r dataset RQ2}
+credit_fraud <- credit_fraud_raw[, c("V4", "V8", "V10", "V13", "V14", "V20", "V21", "V22", "V27", "V28", "Class")]
+credit_no_fraud <- credit_no_fraud_raw[, c("V4", "V8", "V10", "V13", "V14", "V20", "V21", "V22", "V27", "V28", "Class")]
+credit_fraud$model <- ifelse(runif(nrow(credit_fraud))<0.8, 1, 0)
+credit_no_fraud$model <- ifelse(runif(nrow(credit_no_fraud))<0.8, 1, 0)
+credit_df<-rbind(credit_fraud, credit_no_fraud)
+credit_final_test<-credit_df[model %chin% 0, c("V4", "V8", "V10", "V13", "V14", "V20", "V21", "V22", "V27", "V28", "Class")]
+credit_final_test$Class <- as.factor(credit_final_test$Class)
+credit_final_test2<-credit_raw[, -c("Time")]
+credit_final_test2$Class <- as.factor(credit_final_test2$Class)
+credit_dummy<- credit_df[model %chin% 1]
+credit_dummy$Class<- as.character(credit_dummy$Class)
+credit_fraud <- credit_dummy[Class %chin% "Fraud", -c("model")]
+credit_no_fraud <- credit_dummy[Class %chin% "No Fraud", -c("model")][1:2000]#only select 2000 rows of no fraud
+credit_no_fraud <- credit_dummy[Class %chin% "No Fraud", -c("model")][1:5000]#only select 5000 rows of no fraud
+
+#remove raw datasets to save memory
+#remove(credit_df)
+remove(credit_dummy)
+remove(credit_raw)
+remove(credit_no_fraud_raw)
+remove(credit_fraud_raw)
+remove(credit_df)
+```
+
+```{r glm}
+#using logistic regression to express the relatioship between attributes
+#not for machine learning
+library(coefplot)
+#convert the response to be factor
+credit_df$Class <- as.factor(credit_df$Class)
+
+#set formula
+f.glm<-Class~Amount+V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V13+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27+V28
+#model
+tic()
+credit_glm <- glm(f.glm, 
+                  data = credit_df, family = binomial(link="logit"))
+end_time<-toc()
+time.records["Logistic Regression"]<-as.numeric(end_time$toc-end_time$tic)
+
+summary(credit_glm)
+resid(credit_glm)
+plot(credit_glm, se = TRUE, shade = TRUE)
+coefplot(credit_glm)
+head(fortify(credit_glm))
+ggplot(aes(x=.fitted, y=.resid), data = credit_glm)+
+  geom_point()+
+  geom_hline(yintercept=0)+
+  geom_smooth(se=FALSE)+
+  labs(x="Fitted Values", y="Residuals")
+remove(credit_df)
+
+```
+
+```{r svm tuned radial}
+library(e1071)
+#SVM tuning
+svm_df <- rbind(credit_fraud, credit_no_fraud)
+svm_df$Class <- as.factor(svm_df$Class)
+svm_df$train <- ifelse(runif(nrow(svm_df))<0.8, 1, 0)
+trainset <- svm_df[train %chin% 1]
+testset <- svm_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+
+#learning curve
+svm_radial_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda")
+
+#learning curve plot on accuracy
+plot_svm_radial_lda<- ggplot(svm_radial_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+#set timer
+tic()
+#tuning
+tune_out<- tune(svm, Class~., data=trainset,
+                    type="C-classification",
+                    kernel="radial",
+                    ranges=list(
+                      cost = 10^(-1:3), 
+                      gamma = c(0.1, 1, 10), 
+                      coef0 = c(0.1, 1, 10)))
+
+#list optimal values
+t.cost<-tune_out$best.parameters$cost
+t.gamma<-tune_out$best.parameters$gamma
+t.coef<-tune_out$best.parameters$coef0
+
+#model
+svm_radial_model<- svm(Class~., data = trainset, type = "C-classification", 
+                kernel = "radial", cost=t.cost, 
+                coef0=t.coef, gamma=t.gamma)
+end_time<-toc()
+time.records["SVM Radial e1071"]<-as.numeric(end_time$toc-end_time$tic)
+
+#simply visualize
+svm_radial_model
+plot(svm_radial_model)
+
+#predict
+pred_test <- predict(svm_radial_model, testset)
+confus_svm_radial<- confusionMatrix(data=pred_test, reference=testset$Class)
+accuracy.records["SVM Radial e1071"] <- confus_svm_radial$overall["Accuracy"]
+balanced.accuracy.records["SVM Radial e1071"] <- confus_svm_radial$byClass["Balanced Accuracy"]
+kappa.records["SVM Radial e1071"] <- confus_svm_radial$overall["Kappa"]
+
+#remove variable
+remove(svm_df)
+remove(trainset)
+remove(testset)
+remove(tune_out)
+remove(t.cost)
+remove(t.gamma)
+remove(t.coef)
+remove(pred_test)
+remove(end_time)
+
+#final evaluation
+svm_radial_pred_test <- predict(svm_radial_model, newdata = credit_final_test)
+confus_svm_radial_final<- confusionMatrix(svm_radial_pred_test, credit_final_test$Class)
+accuracy.records.final["SVM Radial e1071"] <- confus_svm_radial_final$overall["Accuracy"]
+balanced.accuracy.records.final["SVM Radial e1071"] <- confus_svm_radial_final$byClass["Balanced Accuracy"]
+kappa.records.final["SVM Radial e1071"] <- confus_svm_radial_final$overall["Kappa"]
+
+#package precrec
+mmdata_svm_radial_final<-mmdata(as.numeric(svm_radial_pred_test), credit_final_test$Class)
+svm_radial_performance <- evalmod(mmdata_svm_radial_final)
+svm_radial_performance_measures <- evalmod(mmdata_svm_radial_final, mode = "basic")
+
+remove(mmdata_svm_radial_final)
+
+#show ROC and Precision-Recall plots
+svm_radial_performance
+autoplot(svm_radial_performance)
+
+#show performance measures plots
+svm_radial_performance_measures
+autoplot(svm_radial_performance_measures)
+
+#remove variables
+remove(svm_radial_pred_test)
+remove(svm_radial_performance)
+remove(svm_radial_performance_measures)
+remove(confus_svm_radial)
+remove(confus_svm_radial_final)
+```
+
+```{r svm sigmoid}
+library(e1071)
+#SVM tuning
+svm_df <- rbind(credit_fraud, credit_no_fraud)
+svm_df$Class <- as.factor(svm_df$Class)
+svm_df$train <- ifelse(runif(nrow(svm_df))<0.8, 1, 0)
+trainset <- svm_df[train %chin% 1]
+testset <- svm_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+
+#learning curve
+#this learning curve should be same as svm_radial, neuralnet, which do not include t.control (not caret).
+svm_sigmoid_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda")
+
+#learning curve plot on accuracy
+plot_svm_sigmoid_lda<- ggplot(svm_sigmoid_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+#set timer
+tic()
+#tuning
+tune_out<- tune(svm, Class~., data=trainset,
+                    type="C-classification",
+                    kernel="sigmoid",
+                    ranges=list(
+                      cost = 10^(-1:3), 
+                      gamma = c(0.1, 1, 10), 
+                      coef0 = c(0.1, 1, 10)))
+
+#list optimal values
+t.cost<-tune_out$best.parameters$cost
+t.gamma<-tune_out$best.parameters$gamma
+t.coef<-tune_out$best.parameters$coef0
+
+#model
+svm_sigmoid_model<- svm(Class~., data = trainset, type = "C-classification", 
+                kernel = "sigmoid", cost=t.cost, 
+                coef0=t.coef, gamma=t.gamma)
+end_time<-toc()
+time.records["SVM Sigmoid e1071"]<-as.numeric(end_time$toc-end_time$tic)
+
+#simply visualize
+svm_sigmoid_model
+plot(svm_sigmoid_model)
+
+#predict
+pred_test <- predict(svm_sigmoid_model, testset)
+confus_svm_sigmoid<- confusionMatrix(data=pred_test, reference=testset$Class)
+accuracy.records["SVM Sigmoid e1071"] <- confus_svm_sigmoid$overall["Accuracy"]
+balanced.accuracy.records["SVM Sigmoid e1071"] <- confus_svm_sigmoid$byClass["Balanced Accuracy"]
+kappa.records["SVM Sigmoid e1071"] <- confus_svm_sigmoid$overall["Kappa"]
+
+#remove variables
+remove(tune_out)
+remove(svm_df)
+remove(trainset)
+remove(testset)
+remove(t.cost)
+remove(t.gamma)
+remove(t.coef)
+remove(pred_test)
+remove(end_time)
+
+#final evaluation
+svm_sigmoid_pred_test <- predict(svm_sigmoid_model, newdata = credit_final_test)
+confus_svm_sigmoid_final<- confusionMatrix(svm_sigmoid_pred_test, credit_final_test$Class)
+accuracy.records.final["SVM Sigmoid e1071"] <- confus_svm_sigmoid_final$overall["Accuracy"]
+balanced.accuracy.records.final["SVM Sigmoid e1071"] <- confus_svm_sigmoid_final$byClass["Balanced Accuracy"]
+kappa.records.final["SVM Sigmoid e1071"] <- confus_svm_sigmoid_final$overall["Kappa"]
+
+#package precrec
+mmdata_svm_sigmoid_final<-mmdata(as.numeric(svm_sigmoid_pred_test), credit_final_test$Class)
+svm_sigmoid_performance <- evalmod(mmdata_svm_sigmoid_final)
+svm_sigmoid_performance_measures <- evalmod(mmdata_svm_sigmoid_final, mode = "basic")
+
+remove(mmdata_svm_sigmoid_final)
+
+#show ROC and Precision-Recall plots
+svm_sigmoid_performance
+autoplot(svm_sigmoid_performance)
+
+#show performance measures plots
+svm_sigmoid_performance_measures
+autoplot(svm_sigmoid_performance_measures)
+
+#remove variables
+remove(confus_svm_sigmoid)
+remove(confus_svm_sigmoid_final)
+remove(svm_sigmoid_pred_test)
+remove(svm_sigmoid_performance)
+remove(svm_sigmoid_performance_measures)
+```
+
+```{r nnet caret}
+library(nnet)
+nnet_df <- rbind(credit_fraud, credit_no_fraud)
+#convert Class to be Factor
+nnet_df$Class <- as.factor(nnet_df$Class)
+nnet_df$train <- ifelse(runif(nrow(nnet_df))<0.8, 1, 0)
+trainset <- nnet_df[train %chin% 1]
+testset <- nnet_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+
+#not work
+b.control <- trainControl(method = 'cv', number = 10, classProbs = TRUE, 
+                          verboseIter = TRUE, summaryFunction = twoClassSummary, 
+                          preProcOptions = list(thresh = 0.75, ICAcomp = 3, k = 5))
+
+#tunning
+t.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+t.grid <- expand.grid(size=c(10), decay=c(0.1))
+
+#learning curve
+nnet_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda",
+                          trControl = t.control)
+
+#learning curve plot on accuracy
+plot_nnet_lda<- ggplot(nnet_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+set.seed(1999)
+#model
+tic()
+nnet_model <- train(Class ~., data = trainset, method = "nnet",
+                 trControl=t.control,
+                 preProcess = c("center", "scale"),
+                 tuneGrid=t.grid,
+                 tuneLength = 10)
+end_time<-toc()
+time.records["NN caret nnet"]<-as.numeric(end_time$toc-end_time$tic)
+
+#simply visualise
+nnet_model
+plot(nnet_model)
+
+#predict
+pred_test <- predict(nnet_model, newdata = testset)
+confus_nnet <- confusionMatrix(pred_test, testset$Class)
+accuracy.records["NN caret nnet"] <- confus_nnet$overall["Accuracy"]
+balanced.accuracy.records["NN caret nnet"] <- confus_nnet$byClass["Balanced Accuracy"]
+kappa.records["NN caret nnet"] <- confus_nnet$overall["Kappa"]
+
+#remove variables
+remove(t.control)
+remove(b.control)
+remove(t.grid)
+remove(nnet_df)
+remove(trainset)
+remove(testset)
+remove(pred_test)
+remove(end_time)
+
+#final evaluation
+nnet_pred_test <- predict(nnet_model, newdata = credit_final_test)
+confus_nnet_final<- confusionMatrix(nnet_pred_test, credit_final_test$Class)
+accuracy.records.final["NN caret nnet"] <- confus_nnet_final$overall["Accuracy"]
+balanced.accuracy.records.final["NN caret nnet"] <- confus_nnet_final$byClass["Balanced Accuracy"]
+kappa.records.final["NN caret nnet"] <- confus_nnet_final$overall["Kappa"]
+
+#package precrec
+mmdata_nnet_final<-mmdata(as.numeric(nnet_pred_test), credit_final_test$Class)
+nnet_performance <- evalmod(mmdata_nnet_final)
+nnet_performance_measures <- evalmod(mmdata_nnet_final, mode = "basic")
+
+remove(mmdata_nnet_final)
+
+#show ROC and Precision-Recall plots
+nnet_performance
+autoplot(nnet_performance)
+
+#show performance measures plots
+nnet_performance_measures
+autoplot(nnet_performance_measures)
+
+#remove variables
+remove(nnet_pred_test)
+remove(nnet_performance)
+remove(nnet_performance_measures)
+remove(confus_nnet)
+remove(confus_nnet_final)
+```
+
+```{r svm caret}
+library(kernlab)
+svm_caret_df <- rbind(credit_fraud, credit_no_fraud)
+svm_caret_df$Class <- as.factor(svm_caret_df$Class)
+svm_caret_df$train <- ifelse(runif(nrow(svm_caret_df))<0.8, 1, 0)
+trainset <- svm_caret_df[train %chin% 1]
+testset <- svm_caret_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+
+t.control <- trainControl(method = "repeatedcv", 
+                          number = 10,
+                          repeats = 3)
+#grid search
+grid_radial <- expand.grid(sigma = c(.01, .015, 0.2),
+                    C = c(0.75, 0.9, 1, 1.1, 1.25))
+
+#learning curve
+svm_caret_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda",
+                          trControl = t.control)
+
+#learning curve plot on accuracy
+plot_svm_caret_lda<- ggplot(svm_caret_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+set.seed(1999)
+#model
+tic()
+svm_model_caret <- train(Class ~., data = trainset, method = "svmRadial",
+                                trControl=t.control,tuneGrid = grid_radial,
+                                preProcess = c("center", "scale"), 
+                                tuneLength = 10)
+end_time<-toc()
+time.records["SVM Radial caret kernlab"]<-as.numeric(end_time$toc-end_time$tic)
+
+#simply visualise
+svm_model_caret
+plot(svm_model_caret)
+
+#predict
+pred_test <- predict(svm_model_caret, newdata = testset)
+confus_svm_caret<- confusionMatrix(pred_test, testset$Class)
+accuracy.records["SVM Radial caret kernlab"] <- confus_svm_caret$overall["Accuracy"]
+balanced.accuracy.records["SVM Radial caret kernlab"] <- confus_svm_caret$byClass["Balanced Accuracy"]
+kappa.records["SVM Radial caret kernlab"] <- confus_svm_caret$overall["Kappa"]
+
+#remove variables
+remove(svm_caret_df)
+remove(trainset)
+remove(testset)
+remove(t.control)
+remove(grid_radial)
+remove(pred_test)
+remove(end_time)
+
+#final evaluation
+svm_caret_pred_test <- predict(svm_model_caret, newdata = credit_final_test)
+confus_svm_caret_final<- confusionMatrix(svm_caret_pred_test, credit_final_test$Class)
+accuracy.records.final["SVM Radial caret kernlab"] <- confus_svm_caret_final$overall["Accuracy"]
+balanced.accuracy.records.final["SVM Radial caret kernlab"] <- confus_svm_caret_final$byClass["Balanced Accuracy"]
+kappa.records.final["SVM Radial caret kernlab"] <- confus_svm_caret_final$overall["Kappa"]
+
+#package precrec
+mmdata_svm_caret_final<-mmdata(as.numeric(svm_caret_pred_test), credit_final_test$Class)
+svm_caret_performance <- evalmod(mmdata_svm_caret_final)
+svm_caret_performance_measures <- evalmod(mmdata_svm_caret_final, mode = "basic")
+
+remove(mmdata_svm_caret_final)
+
+#show ROC and Precision-Recall plots
+svm_caret_performance
+autoplot(svm_caret_performance)
+
+#show performance measures plots
+svm_caret_performance_measures
+autoplot(svm_caret_performance_measures)
+
+#remove variables
+remove(confus_svm_caret)
+remove(confus_svm_caret_final)
+remove(svm_caret_performance)
+remove(svm_caret_performance_measures)
+remove(svm_caret_pred_test)
+
+```
+
+```{r knn caret}
+knn_df <- rbind(credit_fraud, credit_no_fraud)
+#convert Class to be Factor
+knn_df$Class <- as.factor(knn_df$Class)
+
+#tuning
+knn_df$train <- ifelse(runif(nrow(knn_df))<0.8, 1, 0)
+trainset <- knn_df[train %chin% 1]
+testset <- knn_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+
+t.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+t.grid <- expand.grid(k=5)
+
+#learning curve
+knn_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda",
+                          trControl = t.control)
+
+#learning curve plot on accuracy
+plot_knn_lda<- ggplot(knn_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+set.seed(1999)
+#model
+tic('knn')
+knn_model <- train(Class ~., data = trainset, method = "knn",
+                 trControl=t.control,
+                 preProcess = c("center", "scale"),
+                 tuneGrid=t.grid,
+                 tuneLength = 10)
+end_time<-toc()
+time.records["KNN caret"]<-as.numeric(end_time$toc-end_time$tic)
+
+#simply visualise
+knn_model
+plot(knn_model)
+
+#predict
+pred_test <- predict(knn_model, newdata = testset)
+confus_knn <- confusionMatrix(pred_test, testset$Class)
+accuracy.records["KNN caret"] <- confus_knn$overall["Accuracy"]
+balanced.accuracy.records["KNN caret"] <- confus_knn$byClass["Balanced Accuracy"]
+kappa.records["KNN caret"] <- confus_knn$overall["Kappa"]
+
+#remove variables
+remove(t.control)
+remove(t.grid)
+remove(knn_df)
+remove(trainset)
+remove(testset)
+remove(pred_test)
+remove(end_time)
+
+#final evaluation
+knn_pred_test <- predict(knn_model, newdata = credit_final_test)
+confus_knn_final<- confusionMatrix(knn_pred_test, credit_final_test$Class)
+accuracy.records.final["KNN caret"] <- confus_knn_final$overall["Accuracy"]
+balanced.accuracy.records.final["KNN caret"] <- confus_knn_final$byClass["Balanced Accuracy"]
+kappa.records.final["KNN caret"] <- confus_knn_final$overall["Kappa"]
+
+#package precrec
+mmdata_knn_final<-mmdata(as.numeric(knn_pred_test), credit_final_test$Class)
+knn_performance <- evalmod(mmdata_knn_final)
+knn_performance_measures <- evalmod(mmdata_knn_final, mode = "basic")
+
+remove(mmdata_knn_final)
+
+#show ROC and Precision-Recall plots
+knn_performance
+autoplot(knn_performance)
+
+#show performance measures plots
+knn_performance_measures
+autoplot(knn_performance_measures)
+
+#remove variables
+remove(knn_pred_test)
+remove(knn_performance)
+remove(knn_performance_measures)
+remove(confus_knn)
+remove(confus_knn_final)
+
+```
+
+```{r randomForest caret}
+library(randomForest)
+rf_df <- rbind(credit_fraud, credit_no_fraud)
+#convert Class to be Factor
+rf_df$Class <- as.factor(rf_df$Class)
+
+#tuning
+rf_df$train <- ifelse(runif(nrow(rf_df))<0.8, 1, 0)
+trainset <- rf_df[train %chin% 1]
+testset <- rf_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+t.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+#for ranger (not work)
+t.grid<- expand.grid(mtry = seq(4, ncol(trainset) * 0.8, 2), 
+                     splitrule = c("gini", "extratrees"),
+                     min.node.size = c(1, 3, 5))
+#for rf
+b.grid<- expand.grid(mtry = seq(4, ncol(trainset) * 0.8, 2))
+
+#learning curve
+rf_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda",
+                          trControl = t.control)
+
+#learning curve plot on accuracy
+plot_rf_lda<- ggplot(rf_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+set.seed(1999)
+#model
+tic()
+rf_model <- train(Class ~., 
+                   data = trainset, 
+                   method = "rf",
+                   trControl=t.control,
+                   tuneGrid=b.grid, 
+                   tuneLength = 10
+                   )
+end_time<-toc()
+time.records["RF caret randomForest"]<-as.numeric(end_time$toc-end_time$tic)
+
+#simply visualise
+rf_model
+plot(rf_model)
+
+#predict
+pred_test <- predict(rf_model, newdata = testset)
+confus_rf <- confusionMatrix(pred_test, testset$Class)
+accuracy.records["RF caret randomForest"] <- confus_rf$overall["Accuracy"]
+balanced.accuracy.records["RF caret randomForest"] <- confus_rf$byClass["Balanced Accuracy"]
+kappa.records["RF caret randomForest"] <- confus_rf$overall["Kappa"]
+
+#remove variables
+remove(t.control)
+remove(t.grid)
+remove(rf_df)
+remove(trainset)
+remove(testset)
+remove(pred_test)
+remove(end_time)
+
+#final evaluation
+rf_pred_test <- predict(rf_model, newdata = credit_final_test)
+confus_rf_final<- confusionMatrix(rf_pred_test, credit_final_test$Class)
+accuracy.records.final["RF caret randomForest"] <- confus_rf_final$overall["Accuracy"]
+balanced.accuracy.records.final["RF caret randomForest"] <- confus_rf_final$byClass["Balanced Accuracy"]
+kappa.records.final["RF caret randomForest"] <- confus_rf_final$overall["Kappa"]
+
+#package precrec
+mmdata_rf_final<-mmdata(as.numeric(rf_pred_test), credit_final_test$Class)
+rf_performance <- evalmod(mmdata_rf_final)
+rf_performance_measures <- evalmod(mmdata_rf_final, mode = "basic")
+
+remove(mmdata_rf_final)
+
+#show ROC and Precision-Recall plots
+rf_performance
+autoplot(rf_performance)
+
+#show performance measures plots
+rf_performance_measures
+autoplot(rf_performance_measures)
+
+#remove variables
+remove(rf_pred_test)
+remove(rf_performance)
+remove(rf_performance_measures)
+remove(confus_rf)
+remove(confus_rf_final)
+```
+
+```{r gbm caret}
+library(gbm)
+library(plyr)
+gbm_df <- rbind(credit_fraud, credit_no_fraud)
+#convert Class to be Factor
+gbm_df$Class <- as.factor(gbm_df$Class)
+
+#tuning
+gbm_df$train <- ifelse(runif(nrow(gbm_df))<0.8, 1, 0)
+trainset <- gbm_df[train %chin% 1]
+testset <- gbm_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+
+t.control <- trainControl(method = "repeatedcv", 
+                          number = 10, 
+                          repeats = 3)
+
+#grid seacrh 1
+b.grid<- expand.grid(n.trees = 200, 
+                     interaction.depth = 1, 
+                     shrinkage = 0.1, 
+                     n.minobsinnode = 10)
+#grid seacrh 2
+t.grid <- expand.grid(n.trees=c(10,20,50,100,500,1000),
+                      shrinkage=c(0.01,0.05,0.1,0.5),
+                      n.minobsinnode = c(3,5,10),
+                      interaction.depth=c(1,5,10))
+#grid seacrh 3
+gbm.grid <-  expand.grid(interaction.depth = c(1, 5, 9), 
+                        n.trees = (1:30)*50, 
+                        shrinkage = 0.1,
+                        n.minobsinnode = 20)
+
+#learning curve
+gbm_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda",
+                          trControl = t.control)
+
+#learning curve plot on accuracy
+plot_gbm_lda<- ggplot(gbm_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+set.seed(1999)
+#gbm caret 1
+tic()
+gbm_model <- train(Class ~., 
+                   data = trainset, 
+                   method = "gbm",
+                   trControl=t.control,
+                   verbose = FALSE,
+                   tuneGrid=b.grid
+                   )
+end_time<-toc()
+time.records["GBM caret gbm"]<-as.numeric(end_time$toc-end_time$tic)
+
+#gbm caret 2
+tic()
+gbm_model_2 <- train(Class ~., 
+                   data = trainset, 
+                   method = "gbm",
+                   trControl=t.control,
+                   verbose = FALSE,
+                   tuneGrid=t.grid
+                   )
+end_time<-toc()
+time.records["GBM caret gbm 2"]<-as.numeric(end_time$toc-end_time$tic)
+
+#gbm caret 3
+tic()
+gbm_model_3 <- train(Class ~., 
+                   data = trainset, 
+                   method = "gbm",
+                   trControl=t.control,
+                   verbose = FALSE,
+                   tuneGrid=gbm.grid
+                   )
+end_time<-toc()
+time.records["GBM caret gbm 3"]<-as.numeric(end_time$toc-end_time$tic)
+#1: b.grid; 2: t.grid; 3.gbm.grid
+
+#simply visualise
+gbm_model
+gbm_model_2
+gbm_model_3
+
+#predict_1
+pred_test <- predict(gbm_model, newdata = testset)
+confus_gbm <- confusionMatrix(pred_test, testset$Class)
+accuracy.records["GBM caret gbm"] <- confus_gbm$overall["Accuracy"]
+balanced.accuracy.records["GBM caret gbm"] <- confus_gbm$byClass["Balanced Accuracy"]
+kappa.records["GBM caret gbm"] <- confus_gbm$overall["Kappa"]
+
+#predict_2
+pred_test_2 <- predict(gbm_model_2, newdata = testset)
+confus_gbm_2 <- confusionMatrix(pred_test_2, testset$Class)
+accuracy.records["GBM caret gbm 2"] <- confus_gbm_2$overall["Accuracy"]
+balanced.accuracy.records["GBM caret gbm 2"] <- confus_gbm_2$byClass["Balanced Accuracy"]
+kappa.records["GBM caret gbm 2"] <- confus_gbm_2$overall["Kappa"]
+
+#predict_3
+pred_test_3 <- predict(gbm_model_3, newdata = testset)
+confus_gbm_3 <- confusionMatrix(pred_test_3, testset$Class)
+accuracy.records["GBM caret gbm 3"] <- confus_gbm_3$overall["Accuracy"]
+balanced.accuracy.records["GBM caret gbm 3"] <- confus_gbm_3$byClass["Balanced Accuracy"]
+kappa.records["GBM caret gbm 3"] <- confus_gbm_3$overall["Kappa"]
+
+#remove variables
+remove(t.control)
+remove(b.grid)
+remove(t.grid)
+remove(gbm_df)
+remove(trainset)
+remove(testset)
+remove(pred_test_1)
+remove(pred_test_2)
+remove(pred_test_3)
+remove(end_time)
+
+#final evaluation
+gbm_pred_test <- predict(gbm_model, newdata = credit_final_test)
+confus_gbm_final<- confusionMatrix(gbm_pred_test, credit_final_test$Class)
+accuracy.records.final["GBM caret gbm"] <- confus_gbm_final$overall["Accuracy"]
+balanced.accuracy.records.final["GBM caret gbm"] <- confus_gbm_final$byClass["Balanced Accuracy"]
+kappa.records.final["GBM caret gbm"] <- confus_gbm_final$overall["Kappa"]
+
+#2
+gbm_pred_test_2 <- predict(gbm_model_2, newdata = credit_final_test)
+confus_gbm_final_2<- confusionMatrix(gbm_pred_test_2, credit_final_test$Class)
+accuracy.records.final["GBM caret gbm 2"] <- confus_gbm_final_2$overall["Accuracy"]
+balanced.accuracy.records.final["GBM caret gbm 2"] <- confus_gbm_final_2$byClass["Balanced Accuracy"]
+kappa.records.final["GBM caret gbm 2"] <- confus_gbm_final_2$overall["Kappa"]
+
+#3
+gbm_pred_test_3 <- predict(gbm_model_3, newdata = credit_final_test)
+confus_gbm_final_3<- confusionMatrix(gbm_pred_test_3, credit_final_test$Class)
+accuracy.records.final["GBM caret gbm 3"] <- confus_gbm_final_3$overall["Accuracy"]
+balanced.accuracy.records.final["GBM caret gbm 3"] <- confus_gbm_final_3$byClass["Balanced Accuracy"]
+kappa.records.final["GBM caret gbm 3"] <- confus_gbm_final_3$overall["Kappa"]
+
+#package precrec
+mmdata_gbm_final<-mmdata(as.numeric(gbm_pred_test), credit_final_test$Class)
+gbm_performance <- evalmod(mmdata_gbm_final)
+gbm_performance_measures <- evalmod(mmdata_gbm_final, mode = "basic")
+
+mmdata_gbm_final_2<-mmdata(as.numeric(gbm_pred_test_2), credit_final_test$Class)
+gbm_performance_2 <- evalmod(mmdata_gbm_final_2)
+gbm_performance_measures_2 <- evalmod(mmdata_gbm_final_2, mode = "basic")
+
+mmdata_gbm_final_3<-mmdata(as.numeric(gbm_pred_test_3), credit_final_test$Class)
+gbm_performance_3 <- evalmod(mmdata_gbm_final_3)
+gbm_performance_measures_3 <- evalmod(mmdata_gbm_final_3, mode = "basic")
+
+remove(mmdata_gbm_final)
+remove(mmdata_gbm_final_2)
+remove(mmdata_gbm_final_3)
+
+#show ROC and Precision-Recall plots
+gbm_performance
+autoplot(gbm_performance)
+
+gbm_performance_2
+autoplot(gbm_performance_2)
+
+gbm_performance_3
+autoplot(gbm_performance_3)
+
+#show performance measures plots
+gbm_performance_measures
+autoplot(gbm_performance_measures)
+
+gbm_performance_measures_2
+autoplot(gbm_performance_measures_2)
+
+gbm_performance_measures_3
+autoplot(gbm_performance_measures_3)
+
+#remove variables
+remove(confus_gbm)
+remove(confus_gbm_2)
+remove(confus_gbm_3)
+remove(confus_gbm_final)
+remove(confus_gbm_final_2)
+remove(confus_gbm_final_3)
+remove(gbm_performance)
+remove(gbm_performance_2)
+remove(gbm_performance_3)
+remove(gbm_performance_measures)
+remove(gbm_performance_measures_2)
+remove(gbm_performance_measures_3)
+remove(gbm_pred_test)
+remove(gbm_pred_test_2)
+remove(gbm_pred_test_3)
+```
+
+```{r neuralnet}
+library(neuralnet)
+library(nnet)
+
+#tuning
+neural_df <- rbind(credit_fraud, credit_no_fraud)
+neural_df$Class <- as.factor(neural_df$Class)
+neural_df$train <- ifelse(runif(nrow(neural_df))<0.8, 1, 0)
+trainset <- neural_df[train %chin% 1]
+testset <- neural_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+
+#learning curve
+neural_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda")
+
+#learning curve plot on accuracy
+plot_neural_lda<- ggplot(neural_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+#model
+tic()
+neural_model <- neuralnet(formula = Class~., 
+                  data = trainset,
+                  #hidden = c(2),       # 2 nodes
+                  hidden = c(1,2),
+                  #tuneGrid = expand.grid(.layer1=c(1:4), .layer2=c(0:4), .layer3=c(0)),
+                  learningrate = 0.01, # learning rate
+                  threshold = 0.01,    # partial derivatives of the error function, a stopping criteria
+                  stepmax = 5e5        # maximum no of ieration = 500000(5*10^5)
+                  )
+end_time<-toc()
+time.records["NN neuralnet nnet"]<-as.numeric(end_time$toc-end_time$tic)
+
+#simply visualize
+neural_model
+plot(neural_model)
+
+#predict
+pred_test <- compute(neural_model, testset) 
+pred.result <- round(pred_test$net.result)
+pred.result <- pred.result[, 2]
+pred.result <- ifelse(pred.result==0, "Fraud", "No Fraud")
+pred.result <- as.factor(pred.result)
+confus_neural <- confusionMatrix(pred.result, testset$Class)
+accuracy.records["NN neuralnet nnet"] <- confus_neural$overall["Accuracy"]
+balanced.accuracy.records["NN neuralnet nnet"] <- confus_neural$byClass["Balanced Accuracy"]
+kappa.records["NN neuralnet nnet"] <- confus_neural$overall["Kappa"]
+
+#remove variables
+remove(neural_df)
+remove(trainset)
+remove(testset)
+remove(pred_test)
+remove(pred.result)
+remove(end_time)
+
+#final evaluation
+pred_test <- compute(neural_model, credit_final_test) 
+pred.result <- round(pred_test$net.result)
+pred.result <- pred.result[, 2]
+pred.result <- ifelse(pred.result==0, "Fraud", "No Fraud")
+neural_pred.result <- as.factor(pred.result)
+confus_neural_final<- confusionMatrix(neural_pred.result, credit_final_test$Class)
+accuracy.records.final["NN neuralnet nnet"] <- confus_neural_final$overall["Accuracy"]
+balanced.accuracy.records.final["NN neuralnet nnet"] <- confus_neural_final$byClass["Balanced Accuracy"]
+kappa.records.final["NN neuralnet nnet"] <- confus_neural_final$overall["Kappa"]
+
+
+#package precrec
+mmdata_neural_final<-mmdata(as.numeric(neural_pred.result), credit_final_test$Class)
+neural_performance <- evalmod(mmdata_neural_final)
+neural_performance_measures <- evalmod(mmdata_neural_final, mode = "basic")
+
+remove(mmdata_neural_final)
+
+#show ROC and Precision-Recall plots
+neural_performance
+autoplot(neural_performance)
+
+#show performance measures plots
+neural_performance_measures
+autoplot(neural_performance_measures)
+
+#remove variables
+remove(confus_neural)
+remove(confus_neural_final)
+remove(neural_performance)
+remove(neural_performance_measures)
+remove(pred.result)
+remove(neural_pred.result)
+
+```
+
+```{r xgbtree caret xgboost}
+library(xgboost)
+xgb_df <- rbind(credit_fraud, credit_no_fraud)
+#convert Class to be Factor
+xgb_df$Class <- as.factor(xgb_df$Class)
+
+#tuning
+xgb_df$train <- ifelse(runif(nrow(xgb_df))<0.8, 1, 0)
+trainset <- xgb_df[train %chin% 1]
+testset <- xgb_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+
+#not work
+b.control <- trainControl(method = "repeatedcv", 
+                          number = 10, 
+                          repeats = 3, 
+                          summaryFunction = twoClassSummary,
+                          classProbs = TRUE,
+                          allowParallel = FALSE)
+
+t.control <- trainControl(method = "repeatedcv",
+                          number = 10,
+                          repeats = 3)
+
+t.grid <- expand.grid(nrounds = 100, 
+                      max_depth = c(2,6,10), 
+                      eta = c(0.01, 0.1),
+                      gamma = c(0),
+                      colsample_bytree = 1,
+                      min_child_weight = 1,
+                      subsample = 0.7)
+set.seed(1999)
+#RQ1
+formula.xgb <- Class~V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V13+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27+V28+Amount
+#RQ2
+formula.xgb <- Class~V4+V8+V10+V13+V14+V20+V21+V22+V27+V28
+#learning curve
+xgb_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda",
+                          trControl = t.control)
+#learning curve plot on accuracy
+plot_xgb_lda<- ggplot(xgb_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+#model
+tic()
+xgb_model <- train(formula.xgb, data = trainset, method = "xgbTree",
+                 trControl=t.control,
+                 tuneGrid=t.grid,
+                 nthread = 4)
+end_time<-toc()
+time.records["XGB caret xgboost"]<-as.numeric(end_time$toc-end_time$tic)
+
+#simply visualize
+xgb_model
+plot(xgb_model)
+
+#predict
+pred_test <- predict(xgb_model, newdata = testset)
+confus_xgb <- confusionMatrix(pred_test, testset$Class)
+accuracy.records["XGB caret xgboost"] <- confus_xgb$overall["Accuracy"]
+balanced.accuracy.records["XGB caret xgboost"] <- confus_xgb$byClass["Balanced Accuracy"]
+kappa.records["XGB caret xgboost"] <- confus_xgb$overall["Kappa"]
+
+#remove variables
+remove(t.control)
+remove(t.grid)
+remove(xgb_df)
+remove(trainset)
+remove(testset)
+remove(pred_test)
+remove(end_time)
+
+#final evaluation
+xgb_pred_test <- predict(xgb_model, newdata = credit_final_test)
+confus_xgb_final<- confusionMatrix(xgb_pred_test, credit_final_test$Class)
+accuracy.records.final["XGB caret xgboost"] <- confus_xgb_final$overall["Accuracy"]
+balanced.accuracy.records.final["XGB caret xgboost"] <- confus_xgb_final$byClass["Balanced Accuracy"]
+kappa.records.final["XGB caret xgboost"] <- confus_xgb_final$overall["Kappa"]
+
+#package precrec
+mmdata_xgb_final<-mmdata(as.numeric(xgb_pred_test), credit_final_test$Class)
+xgb_performance <- evalmod(mmdata_xgb_final)
+xgb_performance_measures <- evalmod(mmdata_xgb_final, mode = "basic")
+
+remove(mmdata_xgb_final)
+
+#show ROC and Precision-Recall plots
+xgb_performance
+autoplot(xgb_performance)
+
+#show performance measures plots
+xgb_performance_measures
+autoplot(xgb_performance_measures)
+
+#remove variables
+remove(confus_xgb)
+remove(confus_xgb_final)
+remove(xgb_performance)
+remove(xgb_performance_measures)
+remove(xgb_pred_test)
+remove(formula.xgb)
+```
+
+```{r dnn caret}
+library(deepnet)
+dnn_df <- rbind(credit_fraud, credit_no_fraud)
+#convert Class to be Factor
+dnn_df$Class <- as.factor(dnn_df$Class)
+
+#tuning
+dnn_df$train <- ifelse(runif(nrow(dnn_df))<0.8, 1, 0)
+trainset <- dnn_df[train %chin% 1]
+testset <- dnn_df[train %chin% 0]
+trainset <- trainset[, -c("train")]
+testset <- testset[, -c("train")]
+
+t.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+#learning curve
+dnn_lda <- learning_curve_dat(dat = trainset,
+                          outcome = "Class", 
+                          test_prop = 1/4,
+                          method = "lda",
+                          trControl = t.control)
+#learning curve plot on accuracy
+plot_dnn_lda<- ggplot(dnn_lda, aes(x = Training_Size, y = Accuracy, color = Data)) + geom_smooth(method = loess, span = .8) + theme_bw()
+
+set.seed(1999)
+
+#model
+tic('dnn')
+dnn_model <- train(Class ~., data = trainset, method = "dnn"#,
+                 #trControl=t.control,
+                 #preProcess = c("center", "scale"),
+                 #tuneGrid=t.grid,
+                 #tuneLength = 10
+                 )
+end_time<-toc()
+time.records["DNN caret"]<-as.numeric(end_time$toc-end_time$tic)
+
+#simply visualise
+dnn_model
+plot(dnn_model)
+
+#predict
+pred_test <- predict(dnn_model, newdata = testset)
+confus_dnn <- confusionMatrix(pred_test, testset$Class)
+accuracy.records["DNN caret"] <- confus_dnn$overall["Accuracy"]
+balanced.accuracy.records["DNN caret"] <- confus_dnn$byClass["Balanced Accuracy"]
+kappa.records["DNN caret"] <- confus_dnn$overall["Kappa"]
+
+#remove variables
+remove(t.control)
+remove(dnn_df)
+remove(trainset)
+remove(testset)
+remove(pred_test)
+remove(end_time)
+
+#final evaluation
+dnn_pred_test <- predict(dnn_model, newdata = credit_final_test)
+confus_dnn_final<- confusionMatrix(dnn_pred_test, credit_final_test$Class)
+accuracy.records.final["DNN caret"] <- confus_dnn_final$overall["Accuracy"]
+balanced.accuracy.records.final["DNN caret"] <- confus_dnn_final$byClass["Balanced Accuracy"]
+kappa.records.final["DNN caret"] <- confus_dnn_final$overall["Kappa"]
+
+#package precrec
+mmdata_dnn_final<-mmdata(as.numeric(dnn_pred_test), credit_final_test$Class)
+dnn_performance <- evalmod(mmdata_dnn_final)
+dnn_performance_measures <- evalmod(mmdata_dnn_final, mode = "basic")
+
+remove(mmdata_dnn_final)
+
+#show ROC and Precision-Recall plots
+dnn_performance
+autoplot(dnn_performance)
+
+#show performance measures plots
+dnn_performance_measures
+autoplot(dnn_performance_measures)
+
+#remove variables
+remove(dnn_performance)
+remove(dnn_performance_measures)
+remove(confus_dnn)
+remove(confus_dnn_final)
+remove(dnn_pred_test)
+```
+
+```{r performance table}
+#Combine
+time.records <- time.records[-1]
+overall<-cbind(time.records,accuracy.records, accuracy.records.final, 
+               balanced.accuracy.records, balanced.accuracy.records.final, 
+               kappa.records, kappa.records.final)
+
+```
+
+```{r Between-Models caret}
+#https://topepo.github.io/caret/model-training-and-tuning.html
+model.comparison <- resamples(list(GBM = gbm_model,
+                                   GBM2= gbm_model_2,
+                                   GBM3=gbm_model_3,
+                                   SVM = svm_model_caret,
+                                   KNN = knn_model,
+                                   RF = rf_model, 
+                                   NNET = nnet_model, 
+                                   #DNN = dnn_model,
+                                   XGB = xgb_model))
+model.comparison
+summary(model.comparison)
+
+#theme setting
+theme.caret <- trellis.par.get()
+theme.caret$plot.symbol$col = rgb(.2, .2, .2, .4)
+theme.caret$plot.symbol$pch = 16
+theme.caret$plot.line$col = rgb(1, 0, 0, .7)
+theme.caret$plot.line$lwd <- 2
+
+trellis.par.set(theme.caret)
+bwplot(model.comparison, layout = c(3, 2))
+
+trellis.par.set(theme.caret)
+xyplot(model.comparison, what = "BlandAltman")
+
+splom(model.comparison)
+#Other visualizations are availible in densityplot.resamples and parallel.resamples
+d.values <- diff(model.comparison)
+d.values
+summary(d.values)
+
+trellis.par.set(theme.caret)
+bwplot(d.values, layout = c(3, 2))
+
+trellis.par.set(caretTheme())
+dotplot(d.values)
+
+```
