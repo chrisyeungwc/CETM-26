@@ -22,4 +22,11 @@ This is a dataset from Kaggle, [**Credit Card Fraud Detection**](https://www.kag
 
 ## Code Style and Demostration
 This data visualisation programming language is R and development platform is R Studio. It is a R Markdown file.
-Also, the source code will be uploaded as CETM26.Rmd
+Also, the source code will be uploaded as [**CETM26.Rmd**](https://github.com/chrisyeungwc/CETM-26/blob/master/CETM26.Rmd).
+
+## Two Research Questions
+1.	Which proposed machine learning models do perform better in fraud detection?
+
+After logistic regression, results revealed that ten attributes are significant to the fraud transaction (Class).
+
+2.	Using the dataset only included these ten significant attributes and Class, which proposed machine learning models do perform better in fraud detection?
